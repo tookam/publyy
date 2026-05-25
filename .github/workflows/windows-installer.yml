@@ -14,6 +14,7 @@ jobs:
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       GYP_MSVS_VERSION: "2022"
+      PACKAGER_ERROR: "ok"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -56,11 +57,40 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      - name: Summarize packager failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $summary = $null
+          if (Test-Path packager-win.log) {
+            $lines = Get-Content packager-win.log | Where-Object {
+              $_ -match '⨯|Error:|error|failed|Cannot|could not|not found'
+            }
+            $summary = $lines | Select-Object -Last 1
+            if (-not $summary) {
+              $summary = Get-Content packager-win.log | Select-Object -Last 1
+            }
+          }
+          if (-not $summary) {
+            $summary = "unknown-packager-error"
+          }
+          $summary = $summary -replace '[\\/:*?"<>|`r`n]+', ' '
+          $summary = $summary -replace '[^A-Za-z0-9 ._-]+', ' '
+          $summary = $summary.Trim()
+          if ($summary.Length -gt 120) {
+            $summary = $summary.Substring(0, 120).Trim()
+          }
+          if (-not $summary) {
+            $summary = "unknown-packager-error"
+          }
+          "PACKAGER_ERROR=$summary" >> $env:GITHUB_ENV
+          $summary
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Publyy-Windows-build-log
+          name: Publyy-Windows-build-log-${{ env.PACKAGER_ERROR }}
           path: packager-win.log
           if-no-files-found: ignore
 
