@@ -27,6 +27,14 @@ jobs:
             package-lock.json
             app/package-lock.json
 
+      - name: Set up Python for node-gyp
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: Install root dependencies
         run: npm ci
 
