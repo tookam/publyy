@@ -1,17 +1,40 @@
 export default class Utils {
+  static isUnsafeMergeKey (property) {
+    return property === '__proto__' ||
+           property === 'prototype' ||
+           property === 'constructor';
+  }
+
+  static isPlainObject (value) {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    let prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
   /*
    * Deep merge for objects as Object.assign not merge objects properly
    */
   static deepMerge (target, source) {
-    if (typeof target !== 'object') {
+    if (!Utils.isPlainObject(target)) {
       target = {};
     }
 
+    if (!Utils.isPlainObject(source)) {
+      source = {};
+    }
+
     for (let property in source) {
-      if (source.hasOwnProperty(property)) {
+      if (Object.prototype.hasOwnProperty.call(source, property)) {
+        if (Utils.isUnsafeMergeKey(property)) {
+          continue;
+        }
+
         let sourceProperty = source[property];
 
-        if (typeof sourceProperty === 'object' && !Array.isArray(sourceProperty) && !(sourceProperty instanceof Date)) {
+        if (Utils.isPlainObject(sourceProperty)) {
           target[property] = Utils.deepMerge(target[property], sourceProperty);
           continue;
         } else if (sourceProperty instanceof Date) {

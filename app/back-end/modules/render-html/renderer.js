@@ -80,6 +80,7 @@ class Renderer {
         this.cachedItems = {
             pages: {},
             pagesStructure: {},
+            pagesStructureHierarchy: {},
             postTags: {},
             posts: {},
             tags: {},
@@ -966,7 +967,10 @@ class Renderer {
 
         if (postData && postData.length) { 
             postIDs = postData.map(row => row.id);
-            postSlugs = postData.map(row => row.slug);
+            postSlugs = postData.map(row => {
+                let cachedPost = this.cachedItems.posts[row.id];
+                return cachedPost && cachedPost.slug ? cachedPost.slug : row.slug;
+            });
             postTemplates = postData.map(row => {
                 if (row.template === '*') {
                     return this.themeConfig.defaultTemplates.post
@@ -1008,6 +1012,10 @@ class Renderer {
 
         // Render post sites
         for (let i = 0; i < postIDs.length; i++) {
+            if (!this.cachedItems.posts[postIDs[i]]) {
+                continue;
+            }
+
             let contextGenerator = new RendererContextPost(this);
             let context = contextGenerator.getContext(postIDs[i]);
             let fileSlug = 'DEFAULT';
@@ -1260,7 +1268,10 @@ class Renderer {
 
         if (pageData && pageData.length) { 
             pageIDs = pageData.map(row => row.id);
-            pageSlugs = pageData.map(row => row.slug);
+            pageSlugs = pageData.map(row => {
+                let cachedPage = this.cachedItems.pages[row.id];
+                return cachedPage && cachedPage.slug ? cachedPage.slug : row.slug;
+            });
             pageTemplates = pageData.map(row => {
                 if (row.template === '*') {
                     return this.themeConfig.defaultTemplates.page
@@ -1302,6 +1313,10 @@ class Renderer {
 
         // Render page sites
         for (let i = 0; i < pageIDs.length; i++) {
+            if (!this.cachedItems.pages[pageIDs[i]]) {
+                continue;
+            }
+
             let contextGenerator = new RendererContextPage(this);
             let context = contextGenerator.getContext(pageIDs[i]);
             let fileSlug = 'DEFAULT';

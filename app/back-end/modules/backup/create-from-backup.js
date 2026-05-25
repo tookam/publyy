@@ -31,53 +31,103 @@ class CreateFromBackup {
         return false;
     }
 
+    static isUnsafeTarEntry(resolvedEntryPath, header, extractBasePath) {
+        let entryName = header && typeof header.name === 'string' ? header.name : '';
+
+        if (!entryName) {
+            return true;
+        }
+
+        if (path.isAbsolute(entryName) || path.win32.isAbsolute(entryName)) {
+            return true;
+        }
+
+        if (header && (header.type === 'symlink' || header.type === 'link')) {
+            return true;
+        }
+
+        if (entryName.replace(/\\/g, '/').split('/').some(s => s === '..')) {
+            return true;
+        }
+
+        let resolvedBase = path.resolve(extractBasePath);
+        let resolvedTarget = path.resolve(resolvedEntryPath);
+
+        if (resolvedTarget !== resolvedBase &&
+            !resolvedTarget.startsWith(resolvedBase + path.sep)) {
+            return true;
+        }
+
+        return false;
+    }
+
     async unpackBackup () {
         this.removeBackupFilesIfNecessary();
+        let safeTempBase = path.resolve(this.tempDir);
 
         let extractOperation = new Promise((resolve, reject) => {
-            fs.createReadStream(this.backupPath).on('error', (err) => {
+            let settled = false;
+            let resolveError = () => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
                 this.removeBackupFilesIfNecessary();
                 resolve({
                     status: 'error',
                     type: 'unpack-error'
                 });
-            }).pipe(tar.extract(this.tempDir, {
+            };
+            let extractor = tar.extract(this.tempDir, {
+                ignore: (resolvedEntryPath, header) => {
+                    return CreateFromBackup.isUnsafeTarEntry(resolvedEntryPath, header, safeTempBase);
+                },
                 finish: () => {
-                let backupTestResult = this.verifyBackup(this.tempDir);
-    
-                if (!backupTestResult) {
-                    this.removeBackupFilesIfNecessary();
-                      
-                    resolve({
-                        status: 'error',
-                        type: 'invalid-backup-content'
-                    });
-
-                    return;
-                }
-
-                let siteNameData = this.getSiteName();
-
-                if (!siteNameData) {
-                    this.removeBackupFilesIfNecessary();
-
-                    resolve({
-                        status: 'error',
-                        type: 'invalid-site-data'
-                    });
-
-                    return;
-                }
-    
-                resolve({
-                    status: 'success',
-                    type: 'unpack-success',
-                    data: {
-                        displayName: siteNameData.displayName,
-                        catalogName: siteNameData.catalogName
+                    if (settled) {
+                        return;
                     }
-                });
-            }}));
+
+                    settled = true;
+                    let backupTestResult = this.verifyBackup(this.tempDir);
+
+                    if (!backupTestResult) {
+                        this.removeBackupFilesIfNecessary();
+
+                        resolve({
+                            status: 'error',
+                            type: 'invalid-backup-content'
+                        });
+
+                        return;
+                    }
+
+                    let siteNameData = this.getSiteName();
+
+                    if (!siteNameData) {
+                        this.removeBackupFilesIfNecessary();
+
+                        resolve({
+                            status: 'error',
+                            type: 'invalid-site-data'
+                        });
+
+                        return;
+                    }
+
+                    resolve({
+                        status: 'success',
+                        type: 'unpack-success',
+                        data: {
+                            displayName: siteNameData.displayName,
+                            catalogName: siteNameData.catalogName
+                        }
+                    });
+                }
+            });
+
+            extractor.on('error', resolveError);
+            fs.createReadStream(this.backupPath).on('error', resolveError).pipe(extractor);
         });
 
         let results = await extractOperation;

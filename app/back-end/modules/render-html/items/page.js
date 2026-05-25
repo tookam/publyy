@@ -1,5 +1,6 @@
 const path = require('path');
 const ContentHelper = require('./../helpers/content');
+const ItemSlugHelper = require('./../helpers/item-slug');
 
 /**
  * Page item for the renderer
@@ -44,6 +45,7 @@ class PageItem {
     }
 
     prepareData() {
+        let pageSlug = ItemSlugHelper.create(this.page, 'page');
         let preparedText = ContentHelper.prepareContent(this.page.id, this.page.text, this.siteConfig.domain, this.themeConfig, this.renderer, this.metaData.editor);
         let preparedExcerpt = ContentHelper.prepareExcerpt(this.themeConfig.config.excerptLength, preparedText);
         let hasCustomExcerpt = false;
@@ -65,7 +67,7 @@ class PageItem {
             id: this.page.id,
             title: this.page.title,
             author: this.renderer.cachedItems.authors[this.page.authors],
-            slug: this.page.slug,
+            slug: pageSlug,
             text: preparedText,
             excerpt: preparedExcerpt,
             createdAt: this.page.created_at,
@@ -119,11 +121,14 @@ class PageItem {
     }
 
     setHierarchyLinks() {
-        let pageURL = this.siteConfig.domain + '/' + this.page.slug + '.html';
+        let currentPage = this.renderer.cachedItems.pages[this.pageID];
+        let currentPageSlug = currentPage ? currentPage.slug : this.pageData.slug;
+        let pageURL = this.siteConfig.domain + '/' + currentPageSlug + '.html';
 
         if (this.siteConfig.advanced.urls.cleanUrls) {
-            let parentItems = this.renderer.cachedItems.pagesStructureHierarchy[this.page.id];
-            let pageSlug = this.page.slug;
+            let pagesStructureHierarchy = this.renderer.cachedItems.pagesStructureHierarchy || {};
+            let parentItems = pagesStructureHierarchy[this.page.id];
+            let pageSlug = currentPageSlug;
 
             if (this.renderer.siteConfig.advanced.urls.cleanUrls && parentItems && parentItems.length) {
                 let slugs = [];
@@ -134,7 +139,7 @@ class PageItem {
                     }
                 }
 
-                slugs.push(this.page.slug);
+                slugs.push(currentPageSlug);
                 pageSlug = slugs.join('/');
             }
 

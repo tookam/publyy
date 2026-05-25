@@ -12,6 +12,37 @@ const { isValidDirSegment } = PathValidator;
  */
 
 class ImportEvents {
+    static sendToWebContents(sender, channel, message) {
+        if (!sender || (typeof sender.isDestroyed === 'function' && sender.isDestroyed())) {
+            return false;
+        }
+
+        try {
+            sender.send(channel, message);
+            return true;
+        } catch (e) {
+            console.log(e);
+            return false;
+        }
+    }
+
+    static sendToChildProcess(processToSend, message) {
+        if (!processToSend || processToSend.killed || !processToSend.connected) {
+            return false;
+        }
+
+        try {
+            processToSend.send(message);
+            return true;
+        } catch (e) {
+            if (e.code !== 'ERR_IPC_CHANNEL_CLOSED') {
+                console.log(e);
+            }
+
+            return false;
+        }
+    }
+
     /**
      * Creating an events instance
      *
@@ -105,15 +136,42 @@ class ImportEvents {
                 'ipc'
             ]
         });
+        let checkFinished = false;
+        let sendCheckError = (message) => {
+            if (checkFinished) {
+                return;
+            }
 
-        importProcess.send({
+            checkFinished = true;
+            ImportEvents.sendToWebContents(sender, 'app-wxr-checked', {
+                status: 'error',
+                message: message || 'The import check process crashed.'
+            });
+        };
+
+        importProcess.once('error', (err) => {
+            sendCheckError(err && err.message ? err.message : false);
+        });
+
+        importProcess.once('exit', (code, signal) => {
+            if (checkFinished) {
+                return;
+            }
+
+            sendCheckError(ImportEvents.getProcessErrorMessage('check', code, signal));
+        });
+
+        if (!ImportEvents.sendToChildProcess(importProcess, {
             type: 'dependencies',
             siteName: siteName,
             filePath: filePath
-        });
+        })) {
+            sendCheckError('The import check process could not be started.');
+        }
 
         importProcess.on('message', function(data) {
-            sender.send('app-wxr-checked', data);
+            checkFinished = true;
+            ImportEvents.sendToWebContents(sender, 'app-wxr-checked', data);
         });
     }
 
@@ -132,8 +190,33 @@ class ImportEvents {
                 'ipc'
             ]
         });
+        let importFinished = false;
+        let sendImportError = (message) => {
+            if (importFinished) {
+                return;
+            }
 
-        importProcess.send({
+            importFinished = true;
+            ImportEvents.sendToWebContents(sender, 'app-wxr-imported', {
+                type: 'result',
+                status: 'error',
+                message: message || 'The import process crashed.'
+            });
+        };
+
+        importProcess.once('error', (err) => {
+            sendImportError(err && err.message ? err.message : false);
+        });
+
+        importProcess.once('exit', (code, signal) => {
+            if (importFinished) {
+                return;
+            }
+
+            sendImportError(ImportEvents.getProcessErrorMessage('import', code, signal));
+        });
+
+        if (!ImportEvents.sendToChildProcess(importProcess, {
             type: 'dependencies',
             appInstance: {
                 appDir: appInstance.appDir,
@@ -146,15 +229,30 @@ class ImportEvents {
             usedTaxonomy: config.usedTaxonomy,
             autop: config.autop,
             postTypes: config.postTypes
-        });
+        })) {
+            sendImportError('The import process could not be started.');
+        }
 
         importProcess.on('message', function(data) {
             if(data.type === 'result') {
-                sender.send('app-wxr-imported', data);
+                importFinished = true;
+                ImportEvents.sendToWebContents(sender, 'app-wxr-imported', data);
             } else {
-                sender.send('app-wxr-import-progress', data);
+                ImportEvents.sendToWebContents(sender, 'app-wxr-import-progress', data);
             }
         });
+    }
+
+    static getProcessErrorMessage(processName, code, signal) {
+        if (typeof code === 'number' && code !== 0) {
+            return 'The WordPress ' + processName + ' process exited with code ' + code + '.';
+        }
+
+        if (signal) {
+            return 'The WordPress ' + processName + ' process stopped after receiving signal ' + signal + '.';
+        }
+
+        return 'The WordPress ' + processName + ' process crashed.';
     }
 }
 

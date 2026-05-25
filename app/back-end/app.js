@@ -39,6 +39,45 @@ const PluginsAPI = require('./modules/plugins/plugins-api.js')
  * Main app class
  */
 class App {
+    static getSafeExternalUrl(urlToOpen) {
+        if (typeof urlToOpen !== 'string' || !urlToOpen) {
+            return false;
+        }
+
+        let parsedUrl;
+        let allowedProtocols = new Set(['http:', 'https:', 'mailto:', 'dat:', 'ipfs:', 'dweb:']);
+
+        try {
+            parsedUrl = new URL(urlToOpen);
+        } catch (e) {
+            return false;
+        }
+
+        if (allowedProtocols.has(parsedUrl.protocol)) {
+            return parsedUrl.href;
+        }
+
+        if (parsedUrl.protocol === 'file:') {
+            if (parsedUrl.host) {
+                return false;
+            }
+
+            let decodedPath;
+
+            try {
+                decodedPath = decodeURIComponent(parsedUrl.pathname);
+            } catch (e) {
+                return false;
+            }
+
+            if (path.extname(decodedPath).toLowerCase() === '.html') {
+                return parsedUrl.href;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Constructor
      *
@@ -48,7 +87,7 @@ class App {
         this.mainWindow = startupSettings.mainWindow;
         this.app = startupSettings.app;
         this.basedir = startupSettings.basedir;
-        this.appDir = path.join(this.app.getPath('documents'), 'Publii');
+        this.appDir = path.join(this.app.getPath('documents'), 'Publyy');
         this.app.appDir = this.appDir;
         this.initPath = path.join(this.appDir, 'config', 'window-config.json');
         this.appConfigPath = path.join(this.appDir, 'config', 'app-config.json');
@@ -290,7 +329,7 @@ class App {
         try {
             siteConfig = JSON.parse(siteConfig);
         } catch (e) {
-            dialog.showErrorBox('Publii cannot read site config', 'There is an issue with file: ' + configFilePath + "\n\nError details: " + e.message);
+            dialog.showErrorBox('Publyy cannot read site config', 'There is an issue with file: ' + configFilePath + "\n\nError details: " + e.message);
             return;
         }
 
@@ -322,7 +361,7 @@ class App {
     // Load websites
     loadSites() {
         if (!fs.existsSync(this.sitesDir)) {
-            dialog.showErrorBox('Publii cannot find your sites folder.', 'Please check if the directory ' + this.sitesDir + ' exists or create it manually, then reopen the application.');
+            dialog.showErrorBox('Publyy cannot find your sites folder.', 'Please check if the directory ' + this.sitesDir + ' exists or create it manually, then reopen the application.');
             return false;
         }
 
@@ -544,12 +583,12 @@ class App {
     // Check permissions errors
     hasPermissionsErrors (error) {
         if (error.code === 'EACCES') {
-            dialog.showErrorBox('Publii has no read/write access to the config folder', 'Please check the permissions of the Publii config folder and try to reopen the application.');
+            dialog.showErrorBox('Publyy has no read/write access to the config folder', 'Please check the permissions of the Publyy config folder and try to reopen the application.');
             return true;
         }
 
         if (error.code === 'EPERM') {
-            dialog.showErrorBox('Publii has no read/write access to the config folder', 'If you are using macOS 10.15+ - please open "System Preferences", go to "Security & Privacy" and under "Privacy Tab" please check if Publii has proper permissions for the "Files and Documents". For other operating systems - please check the file permissions for the Publii configuration folder.');
+            dialog.showErrorBox('Publyy has no read/write access to the config folder', 'If you are using macOS 10.15+ - please open "System Preferences", go to "Security & Privacy" and under "Privacy Tab" please check if Publyy has proper permissions for the "Files and Documents". For other operating systems - please check the file permissions for the Publyy configuration folder.');
             return true;
         }
 
@@ -605,7 +644,8 @@ class App {
         Menu.setApplicationMenu(null);
         this.mainWindow = new BrowserWindow(windowParams);
         this.mainWindow.setMenu(null);
-        this.mainWindow.loadURL('file:///' + this.basedir + '/dist/index.html');
+        let appIndexUrl = url.pathToFileURL(path.join(this.basedir, 'dist', 'index.html')).href;
+        this.mainWindow.loadURL(appIndexUrl);
         this.mainWindow.removeMenu();
 
         // Register search shortcut listener
@@ -627,25 +667,27 @@ class App {
         });
 
         this.mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-            if (typeof url !== 'string') {
-                return { action: 'deny' };
+            let safeExternalUrl = App.getSafeExternalUrl(url);
+
+            if (safeExternalUrl) {
+                shell.openExternal(safeExternalUrl);
             }
 
-            let urlToOpen;
-            let allowedProtocols = ['http:', 'https:', 'file:', 'dat:', 'ipfs:', 'dweb:'];
-
-            try {
-                urlToOpen = new URL(url);
-            } catch (e) {
-                return { action: 'deny' };
-            }
-
-            if (allowedProtocols.indexOf(urlToOpen.protocol) > -1) {
-                urlToOpen = urlToOpen.href.replace(/\s/gmi, '');
-                shell.openExternal(url);
-            }
-            
             return { action: 'deny' };
+        });
+
+        this.mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+            if (navigationUrl === appIndexUrl || navigationUrl === this.mainWindow.webContents.getURL()) {
+                return;
+            }
+
+            event.preventDefault();
+
+            let safeExternalUrl = App.getSafeExternalUrl(navigationUrl);
+
+            if (safeExternalUrl) {
+                shell.openExternal(safeExternalUrl);
+            }
         });
 
         this.mainWindow.webContents.on('app-command', (e, cmd) => {

@@ -16,6 +16,8 @@ const slug = require('./../../helpers/slug');
 const mime = require('mime');
 const stripTags = require('striptags');
 
+const S3_OPERATION_TIMEOUT = 120000;
+
 class S3 {
     constructor(deploymentInstance = false) {
         this.deployment = deploymentInstance;
@@ -24,6 +26,7 @@ class S3 {
         this.waitForTimeout = false;
         this.softUploadErrors = {};
         this.hardUploadErrors = [];
+        this.uploadFinished = false;
     }
 
     async initConnection() {
@@ -78,7 +81,7 @@ class S3 {
         this.connection = new S3Client(connectionParams);
         this.sendProgress(6, false);
 
-        process.send({
+        this.sendToParent({
             type: 'web-contents',
             message: 'app-connection-in-progress'
         });
@@ -90,10 +93,10 @@ class S3 {
         };
 
         try {
-            await this.connection.send(new ListObjectsCommand(params));
+            await this.sendCommand(new ListObjectsCommand(params), 'S3 bucket listing', 20000);
             this.waitForTimeout = false;
           
-            process.send({
+            this.sendToParent({
                 type: 'web-contents',
                 message: 'app-connection-success'
             });
@@ -110,7 +113,7 @@ class S3 {
 
         setTimeout(() => {
             if(this.waitForTimeout === true) {
-                process.send({
+                this.sendToParent({
                     type: 'web-contents',
                     message: 'app-connection-error'
                 });
@@ -135,16 +138,19 @@ class S3 {
         };
 
         try {
-            let data = await this.connection.send(new GetObjectCommand(params));
+            let data = await this.sendCommand(new GetObjectCommand(params), 'S3 remote file list download');
             console.log(`[${new Date().toUTCString()}] <- files.publii.json`);
             this.sendProgress(8, false);
-            let remoteFile = await this.s3streamToString(data.Body);
+            let remoteFile = await this.withTimeout(
+                this.s3streamToString(data.Body),
+                'S3 remote file list stream'
+            );
             this.deployment.checkLocalListWithRemoteList(remoteFile);
           } catch (err) {
             console.log(`[${new Date().toUTCString()}] <- files.publii.json`);
         
             if (err.name !== 'NoSuchKey') {
-                this.onError(err);
+                this.finishWithError(err);
                 return;
             }
         
@@ -163,14 +169,9 @@ class S3 {
         
         let filePath = path.join(this.deployment.inputDir, 'files.publii.json');
     
-        fs.readFile(filePath, async (err, fileContent) => {
-            if (err) {
-                this.onError(err);
-                return;
-            }
-        
+        try {
+            let fileContent = await fs.readFile(filePath);
             let fileACL = this.deployment.siteConfig.deployment.s3.acl || 'public-read';
-        
             let params = {
                 ACL: fileACL,
                 Body: fileContent,
@@ -178,29 +179,28 @@ class S3 {
                 Key: fileName,
                 ContentType: mime.getType(fileName) || 'application/json'
             };
+
+            await this.sendCommand(new PutObjectCommand(params), 'S3 final file list upload');
+            console.log(`[${new Date().toUTCString()}] -> ${fileName}`);
+            this.sendProgress(100, false);
+            this.uploadFinished = true;
     
-            try {
-                await this.connection.send(new PutObjectCommand(params));
-                console.log(`[${new Date().toUTCString()}] -> ${fileName}`);
-                this.sendProgress(100, false);
-        
-                process.send({
-                    type: 'sender',
-                    message: 'app-deploy-uploaded',
-                    value: {
-                        status: true,
-                        issues: this.hardUploadErrors.length > 0
-                    }
-                });
-        
-                setTimeout(() => {
-                    process.kill(process.pid, 'SIGTERM');
-                }, 1000);
-            } catch (uploadErr) {
-                console.log(`[${new Date().toUTCString()}] -> ${fileName}`);
-                this.onError(uploadErr);
-            }
-        });
+            this.sendToParent({
+                type: 'sender',
+                message: 'app-deploy-uploaded',
+                value: {
+                    status: true,
+                    issues: this.hardUploadErrors.length > 0
+                }
+            });
+
+            setTimeout(() => {
+                process.kill(process.pid, 'SIGTERM');
+            }, 1000);
+        } catch (uploadErr) {
+            console.log(`[${new Date().toUTCString()}] -> ${fileName}`);
+            this.finishWithError(uploadErr);
+        }
     }
 
     /**
@@ -224,63 +224,82 @@ class S3 {
 
     async uploadFileObject(input) {
         let filePath = path.join(this.deployment.inputDir, input);
-        
-        fs.readFile(filePath, async (err, fileContent) => {
-            if (err) {
-                this.onError(err);
-                return;
+
+        let fileName = input;
+
+        if (typeof this.prefix === 'string' && this.prefix !== '') {
+            fileName = this.prefix + fileName;
+        }
+
+        let fileContent;
+
+        try {
+            fileContent = await fs.readFile(filePath);
+        } catch (err) {
+            await this.markUploadFailure(input, fileName, err);
+            return;
+        }
+
+        let fileACL = this.deployment.siteConfig.deployment.s3.acl || 'public-read';
+        let htmlCacheControl = this.deployment.siteConfig.deployment.s3.htmlCacheControl || 'no-cache, no-store';
+        let otherCacheControl = this.deployment.siteConfig.deployment.s3.otherCacheControl || 'public, max-age=2592000';
+        let fileExtension = path.extname(fileName).substring(1);
+        let cacheControl = fileExtension === 'html' ? htmlCacheControl : otherCacheControl;
+        let params = {
+            ACL: fileACL,
+            Body: fileContent,
+            Bucket: this.bucket,
+            Key: fileName,
+            CacheControl: cacheControl,
+            ContentType: mime.getType(fileExtension) || 'application/octet-stream'
+        };
+
+        try {
+            await this.sendCommand(new PutObjectCommand(params), 'S3 file upload: ' + input);
+            this.deployment.currentOperationNumber++;
+            console.log(`[${ new Date().toUTCString() }] UPL ${input} -> ${fileName}`);
+            this.deployment.progressOfUploading += this.deployment.progressPerFile;
+            this.sendProgress(8 + Math.floor(this.deployment.progressOfUploading));
+            await this.uploadFile();
+        } catch (uploadErr) {
+            this.onError(uploadErr, true);
+
+            await this.delay(500);
+
+            if (!this.softUploadErrors[input]) {
+                this.softUploadErrors[input] = 1;
+            } else {
+                this.softUploadErrors[input]++;
             }
 
-            let fileName = input;
-            
-            if (typeof this.prefix === 'string' && this.prefix !== '') {
-                fileName = this.prefix + fileName;
+            if (this.softUploadErrors[input] <= 5) {
+                await this.uploadFileObject(input);
+            } else {
+                await this.markUploadFailure(input, fileName, uploadErr);
             }
+        }
+    }
 
-            let fileACL = this.deployment.siteConfig.deployment.s3.acl || 'public-read';
-            let htmlCacheControl = this.deployment.siteConfig.deployment.s3.htmlCacheControl || 'no-cache, no-store';
-            let otherCacheControl = this.deployment.siteConfig.deployment.s3.otherCacheControl || 'public, max-age=2592000';
-            let fileExtension = path.extname(fileName).substring(1);
-            let cacheControl = fileExtension === 'html' ? htmlCacheControl : otherCacheControl;
-            let params = {
-                ACL: fileACL,
-                Body: fileContent,
-                Bucket: this.bucket,
-                Key: fileName,
-                CacheControl: cacheControl,
-                ContentType: mime.getType(fileExtension) || 'application/octet-stream'
-            };
+    async markUploadFailure(input, fileName, err) {
+        this.hardUploadErrors.push(input);
+        this.deployment.currentOperationNumber++;
 
-            try {
-                await this.connection.send(new PutObjectCommand(params));
-                this.deployment.currentOperationNumber++;
-                console.log(`[${ new Date().toUTCString() }] UPL ${input} -> ${fileName}`);
-                this.deployment.progressOfUploading += this.deployment.progressPerFile;
-                this.sendProgress(8 + Math.floor(this.deployment.progressOfUploading));
-                await this.uploadFile();
-            } catch (uploadErr) {
-                this.onError(uploadErr, true);
+        let errorMessage = err && err.message ? `: ${err.message}` : '';
+        console.log(`[${ new Date().toUTCString() }] UPL HARD ERR ${input} -> ${fileName}${errorMessage}`);
+        this.deployment.progressOfUploading += this.deployment.progressPerFile;
+        this.sendProgress(8 + Math.floor(this.deployment.progressOfUploading));
+        await this.uploadFile();
+    }
 
-                setTimeout(async () => {
-                    if (!this.softUploadErrors[input]) {
-                        this.softUploadErrors[input] = 1;
-                    } else {
-                        this.softUploadErrors[input]++;
-                    }
+    async markDeleteFailure(input, err) {
+        this.hardUploadErrors.push(input);
+        this.deployment.currentOperationNumber++;
 
-                    if (this.softUploadErrors[input] <= 5) {
-                        await this.uploadFileObject(input);
-                    } else {
-                        this.hardUploadErrors.push(input);
-                        this.deployment.currentOperationNumber++;
-                        console.log(`[${ new Date().toUTCString() }] UPL HARD ERR ${input} -> ${fileName}`);
-                        this.deployment.progressOfUploading += this.deployment.progressPerFile;
-                        this.sendProgress(8 + Math.floor(this.deployment.progressOfUploading));
-                        await this.uploadFile();
-                    }
-                }, 500);
-            }
-        });
+        let errorMessage = err && err.message ? `: ${err.message}` : '';
+        console.log(`[${ new Date().toUTCString() }] DEL HARD ERR ${input}${errorMessage}`);
+        this.deployment.progressOfDeleting += this.deployment.progressPerFile;
+        this.sendProgress(8 + Math.floor(this.deployment.progressOfDeleting));
+        await this.removeFile();
     }
 
     async removeFile() {
@@ -306,7 +325,7 @@ class S3 {
         };
     
         try {
-            await this.connection.send(new DeleteObjectCommand(params));
+            await this.sendCommand(new DeleteObjectCommand(params), 'S3 file delete: ' + input);
             this.deployment.currentOperationNumber++;
             console.log(`[${ new Date().toUTCString() }] DEL ${input}`);
             this.deployment.progressOfDeleting += this.deployment.progressPerFile;
@@ -325,16 +344,18 @@ class S3 {
 
             console.error(`[${new Date().toUTCString()}] Error deleting ${input}`, err);
             this.onError(err, true);
+            await this.markDeleteFailure(input, err);
         }
     }
 
     onError(err, silentMode = false) {
-        console.log(`[${ new Date().toUTCString() }] S3 ERROR: ${err.message}`);
+        let message = err && err.message ? err.message : err;
+        console.log(`[${ new Date().toUTCString() }] S3 ERROR: ${message}`);
 
         if(this.waitForTimeout && !silentMode) {
             this.waitForTimeout = false;
 
-            process.send({
+            this.sendToParent({
                 type: 'web-contents',
                 message: 'app-connection-error'
             });
@@ -342,6 +363,92 @@ class S3 {
             setTimeout(function () {
                 process.kill(process.pid, 'SIGTERM');
             }, 1000);
+        }
+    }
+
+    finishWithError(err) {
+        if (this.uploadFinished) {
+            return;
+        }
+
+        this.uploadFinished = true;
+
+        let message = err && err.message ? err.message : err;
+        message = stripTags((message || 'S3 deployment failed').toString());
+        console.log(`[${ new Date().toUTCString() }] S3 FATAL ERROR: ${message}`);
+
+        this.sendToParent({
+            type: 'sender',
+            message: 'app-deploy-uploaded',
+            value: {
+                status: false,
+                message
+            }
+        });
+
+        setTimeout(() => {
+            process.kill(process.pid, 'SIGTERM');
+        }, 1000);
+    }
+
+    async sendCommand(command, operationName, timeoutMs = S3_OPERATION_TIMEOUT) {
+        let abortController = typeof AbortController !== 'undefined' ? new AbortController() : false;
+        let sendPromise = abortController ?
+            this.connection.send(command, { abortSignal: abortController.signal }) :
+            this.connection.send(command);
+
+        return await this.withTimeout(sendPromise, operationName, timeoutMs, abortController);
+    }
+
+    async withTimeout(promise, operationName, timeoutMs = S3_OPERATION_TIMEOUT, abortController = false) {
+        let timeout = false;
+        let timeoutPromise = new Promise((resolve, reject) => {
+            timeout = setTimeout(() => {
+                if (abortController) {
+                    abortController.abort();
+                }
+
+                reject(this.createTimeoutError(operationName, timeoutMs));
+            }, timeoutMs);
+        });
+
+        try {
+            return await Promise.race([promise, timeoutPromise]);
+        } catch (err) {
+            if (err && err.name === 'AbortError') {
+                throw this.createTimeoutError(operationName, timeoutMs);
+            }
+
+            throw err;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    createTimeoutError(operationName, timeoutMs) {
+        let timeoutErr = new Error(operationName + ' timed out after ' + Math.round(timeoutMs / 1000) + ' seconds');
+        timeoutErr.name = 'TimeoutError';
+        return timeoutErr;
+    }
+
+    delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    sendToParent(message) {
+        if (typeof process.send !== 'function' || process.connected === false) {
+            return false;
+        }
+
+        try {
+            process.send(message);
+            return true;
+        } catch (err) {
+            if (err && err.code !== 'ERR_IPC_CHANNEL_CLOSED') {
+                console.log(err);
+            }
+
+            return false;
         }
     }
 
@@ -407,7 +514,7 @@ class S3 {
         };
 
         try {
-            await this.connection.send(new ListObjectsCommand(testParams));
+            await this.sendCommand(new ListObjectsCommand(testParams), 'S3 test connection', 10000);
         } catch (err) {
             waitForTimeout = false;
             app.mainWindow.webContents.send('app-deploy-test-error', {
@@ -438,7 +545,7 @@ class S3 {
             operations = false;
         }
 
-        process.send({
+        this.sendToParent({
             type: 'web-contents',
             message: 'app-uploading-progress',
             value: {

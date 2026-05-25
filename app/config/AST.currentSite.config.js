@@ -205,7 +205,7 @@ const AstCurrentSiteConfig = {
             password: '',
             commitAuthor: '',
             commitEmail: '',
-            commitMessage: 'Publii: update content'
+            commitMessage: 'Publyy: update content'
         },
         github: {
             server: 'api.github.com',

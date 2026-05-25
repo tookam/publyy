@@ -35,6 +35,7 @@ class WxrParser {
             posts: [],
             pages: [],
             tags: [],
+            tagReferences: {},
             images: [],
             mapping: {
                 authors: [],
@@ -45,6 +46,35 @@ class WxrParser {
             },
             imagesQueue: {}
         };
+    }
+
+    normalizeToArray(items) {
+        if (!items) {
+            return [];
+        }
+
+        return Array.isArray(items) ? items : [items];
+    }
+
+    getXmlTextValue(value) {
+        if (!value) {
+            return '';
+        }
+
+        if (typeof value === 'object' && value['#text']) {
+            return value['#text'];
+        }
+
+        return value.toString();
+    }
+
+    findAuthorForMapping(authors, authorUsername, authorName) {
+        authors = this.normalizeToArray(authors);
+
+        return authors.find(author => slug(author.username) === authorUsername) ||
+            authors.find(author => author.name === authorName) ||
+            authors[0] ||
+            false;
     }
 
     /**
@@ -220,12 +250,7 @@ class WxrParser {
         }
 
         // get all authors items
-        let authors = this.parsedContent.rss.channel['wp:author'];
-
-        if(!authors.length) {
-            this.createAuthor(authors, 0, 1);
-            return;
-        }
+        let authors = this.normalizeToArray(this.parsedContent.rss.channel['wp:author']);
 
         for(let i = 0; i < authors.length; i++) {
             this.createAuthor(authors[i], i, authors.length);
@@ -240,15 +265,18 @@ class WxrParser {
      * @param totalNumber
      */
     createAuthor(authorData, index, totalNumber) {
-        let authorUsername = slug(authorData['wp:author_login']);
+        let authorLogin = this.getXmlTextValue(authorData['wp:author_login']);
+        let authorUsername = slug(authorLogin);
+        let authorName = this.getXmlTextValue(authorData['wp:author_display_name']) || authorLogin || 'Imported author';
+        let authorEmail = this.getXmlTextValue(authorData['wp:author_email']);
         // For each author item insert author object
         let newAuthor = new Author(this.appInstance, {
             id: 0,
             site: this.siteName,
-            name: authorData['wp:author_display_name'],
+            name: authorName,
             username: authorUsername,
             config: JSON.stringify({
-                email: authorData['wp:author_email'],
+                email: authorEmail,
                 avatar: '',
                 useGravatar: false,
                 description: '',
@@ -256,17 +284,22 @@ class WxrParser {
                 metaDescription: '',
                 template: ''
             }),
-            additionalData: ''
+            additionalData: {}
         }, false);
 
         let newAuthorResult = newAuthor.save();
-        let authors = newAuthorResult.authors;
-        let newAuthorResultFiltered = authors.filter(author => author.username === authorUsername);
+        let importedAuthorID = newAuthorResult.authorID;
+
+        if (!importedAuthorID) {
+            let authors = newAuthorResult.authors || newAuthor.authorsData.load();
+            let mappedAuthor = this.findAuthorForMapping(authors, authorUsername, authorName);
+            importedAuthorID = mappedAuthor ? mappedAuthor.id : 1;
+        }
 
         // Store tag ID in the internal array AS:
         // wp:tag_slug -> tag ID in Publii
-        this.temp.authors[authorUsername] = newAuthorResultFiltered[0].id;
-        this.temp.mapping.authors[authorData['wp:author_id']] = newAuthorResultFiltered[0].id;
+        this.temp.authors[authorUsername] = importedAuthorID;
+        this.temp.mapping.authors[this.getXmlTextValue(authorData['wp:author_id'])] = importedAuthorID;
 
         process.send({
             type: 'progress',
@@ -294,14 +327,14 @@ class WxrParser {
             items = this.parsedContent.rss.channel['wp:category'];
         }
 
-        if(items && !items.length) {
+        items = this.normalizeToArray(items);
+
+        if(!items.length) {
             return;
         }
 
-        if(items && items.length) {
-            for (let i = 0; i < items.length; i++) {
-                this.createTag(items[i], i, items.length);
-            }
+        for (let i = 0; i < items.length; i++) {
+            this.createTag(items[i], i, items.length);
         }
     }
 
@@ -313,15 +346,19 @@ class WxrParser {
      * @param totalNumber
      */
     createTag(tagData, index, totalNumber) {
-        let itemName = '';
-        let itemSlug = '';
+        let itemName = this.getTaxonomyName(tagData);
+        let originalItemSlug = this.getTaxonomySlug(tagData);
+        let itemSlug = originalItemSlug;
+        let importedTag = false;
+        let newItemResult = false;
 
-        if(this.usedTaxonomy === 'tags') {
-            itemName = (tagData['wp:tag_name']).toString();
-            itemSlug = (tagData['wp:tag_slug']).toString();
-        } else {
-            itemName = (tagData['wp:cat_name']).toString();
-            itemSlug = (tagData['wp:category_nicename']).toString();
+        if (!itemName) {
+            return;
+        }
+
+        if (!itemSlug) {
+            itemSlug = slug(itemName);
+            originalItemSlug = itemSlug;
         }
 
         // For each author item insert author object
@@ -334,30 +371,42 @@ class WxrParser {
             additionalData: ''
         }, false);
 
-        let newItemResult = newItem.save();
+        newItemResult = newItem.save();
 
-        if(!newItemResult.tags) {
-            itemSlug += '-2';
+        if(newItemResult.tags) {
+            importedTag = this.findTagForMapping(newItemResult.tags, itemSlug, itemName);
+        } else {
+            let existingTags = newItem.tagsData.load();
+            let tagWithSameName = existingTags.find(tag => tag.name === itemName);
 
-            newItem = new Tag(this.appInstance, {
-                id: 0,
-                site: this.siteName,
-                name: itemName,
-                slug: itemSlug,
-                description: '',
-                additionalData: ''
-            });
+            if(tagWithSameName) {
+                importedTag = tagWithSameName;
+            } else if(newItemResult.message === 'tag-duplicate-slug') {
+                itemSlug = this.getUniqueTaxonomySlug(itemSlug, existingTags);
 
-            newItemResult = newItem.save();
+                newItem = new Tag(this.appInstance, {
+                    id: 0,
+                    site: this.siteName,
+                    name: itemName,
+                    slug: itemSlug,
+                    description: '',
+                    additionalData: ''
+                });
 
-            if(!newItemResult.tags) {
-                return;
+                newItemResult = newItem.save();
+                importedTag = newItemResult.tags ? this.findTagForMapping(newItemResult.tags, itemSlug, itemName) : false;
+            } else {
+                importedTag = this.findTagForMapping(existingTags, itemSlug, itemName);
             }
         }
 
-        let newItemResultFiltered = newItemResult.tags.filter(tag => tag.slug === slug(itemSlug));
-        this.temp.tags[itemSlug] = newItemResultFiltered[0].id;
-        this.temp.mapping.tags[tagData['wp:term_id']] = newItemResultFiltered[0].id;
+        if(!importedTag) {
+            return;
+        }
+
+        this.temp.tags[originalItemSlug] = importedTag.id;
+        this.temp.tagReferences[originalItemSlug] = importedTag.name || itemName;
+        this.temp.mapping.tags[this.getTaxonomyTermID(tagData)] = importedTag.id;
 
         process.send({
             type: 'progress',
@@ -371,6 +420,75 @@ class WxrParser {
         });
 
         console.log('-> Imported tag (' + (index + 1) + ' / ' + totalNumber + '): ' + itemName);
+    }
+
+    getTaxonomyName(tagData) {
+        if(this.usedTaxonomy === 'tags') {
+            return this.getXmlTextValue(tagData['wp:tag_name']);
+        }
+
+        return this.getXmlTextValue(tagData['wp:cat_name']);
+    }
+
+    getTaxonomySlug(tagData) {
+        if(this.usedTaxonomy === 'tags') {
+            return this.getXmlTextValue(tagData['wp:tag_slug']);
+        }
+
+        return this.getXmlTextValue(tagData['wp:category_nicename']);
+    }
+
+    getTaxonomyTermID(tagData) {
+        return this.getXmlTextValue(tagData['wp:term_id']);
+    }
+
+    findTagForMapping(tags, itemSlug, itemName) {
+        tags = this.normalizeToArray(tags);
+
+        return tags.find(tag => tag.slug === slug(itemSlug)) ||
+            tags.find(tag => tag.name === itemName) ||
+            false;
+    }
+
+    getUniqueTaxonomySlug(itemSlug, tags) {
+        let existingSlugs = this.normalizeToArray(tags).map(tag => tag.slug);
+        let baseSlug = itemSlug;
+        let suffix = 2;
+
+        while (existingSlugs.indexOf(slug(itemSlug)) !== -1) {
+            itemSlug = baseSlug + '-' + suffix;
+            suffix++;
+        }
+
+        return itemSlug;
+    }
+
+    getPostTagsFromCategories(categories) {
+        let postTags = [];
+
+        categories = this.normalizeToArray(categories);
+
+        if(!categories.length) {
+            return postTags;
+        }
+
+        let taxonomyDomain = this.usedTaxonomy === 'tags' ? 'post_tag' : 'category';
+        let tags = categories.filter(item => {
+            return typeof item === 'object' && item['@_domain'] === taxonomyDomain;
+        });
+
+        postTags = tags.map(tag => {
+            let tagSlug = this.getXmlTextValue(tag['@_nicename']);
+            let tagName = this.getXmlTextValue(tag['#text']);
+
+            if(tagSlug && this.temp.tagReferences[tagSlug]) {
+                return this.temp.tagReferences[tagSlug];
+            }
+
+            return tagName;
+        }).filter(Boolean);
+
+        return [...new Set(postTags)];
     }
 
     /**
@@ -398,29 +516,19 @@ class WxrParser {
             // For each post item insert post object
             let postImages = this.getPostImages(posts[i]['content:encoded']);
             let postSlug = slug(posts[i].title);
-            let postAuthor = this.temp.authors[slug(posts[i]['dc:creator'])];
+            let postAuthor = this.temp.authors[slug(this.getXmlTextValue(posts[i]['dc:creator']))];
             let postText = this.preparePostText(posts[i]['content:encoded'], postImages);
             let postStatus = posts[i]['wp:status'] === 'draft' ? 'draft' : 'published'
             let postTags = '';
             let postTitle = (posts[i].title).toString();
 
-            if(posts[i]['category'] && (posts[i]['category'].length || posts[i]['category'] instanceof Object)) {
-                let tags = false;
-
-                if (!posts[i]['category'].length || typeof posts[i]['category'] === 'string') {
-                    posts[i]['category'] = [posts[i]['category']];
-                }
-
-                if(this.usedTaxonomy === 'tags') {
-                    tags = posts[i]['category'].filter(item => item['@_domain'] === 'post_tag');
-                } else {
-                    tags = posts[i]['category'].filter(item => item['@_domain'] === 'category');
-                }
-
-                postTags = [...new Set(tags.map(tag => tag['#text']))];
-            }
+            postTags = this.getPostTagsFromCategories(posts[i]['category']);
 
             if(!this.importAuthors) {
+                postAuthor = '1';
+            }
+
+            if(!postAuthor) {
                 postAuthor = '1';
             }
 
@@ -528,12 +636,16 @@ class WxrParser {
             // For each page item insert post object
             let pageImages = this.getPostImages(pages[i]['content:encoded']);
             let pageSlug = slug(pages[i].title);
-            let pageAuthor = this.temp.authors[slug(pages[i]['dc:creator'])];
+            let pageAuthor = this.temp.authors[slug(this.getXmlTextValue(pages[i]['dc:creator']))];
             let pageText = this.preparePostText(pages[i]['content:encoded'], pageImages);
             let pageStatus = pages[i]['wp:status'] === 'draft' ? 'draft,is-page' : 'published,is-page'
             let pageTitle = (pages[i].title).toString();
 
             if(!this.importAuthors) {
+                pageAuthor = '1';
+            }
+
+            if(!pageAuthor) {
                 pageAuthor = '1';
             }
 
@@ -613,13 +725,21 @@ class WxrParser {
      */
     getImageURLs() {
         let items = this.parsedContent.rss.channel['item'];
-        items = Array.isArray(items) ? items : [items];
+        items = this.normalizeToArray(items);
 
         if (items && items.length) {
             items = items.filter(item => item['wp:post_type'] === 'attachment');
 
             for (let item of items) {
-                this.temp.images[item['wp:post_id']] = item['wp:attachment_url'];
+                let imageURL = this.getXmlTextValue(item['wp:attachment_url']);
+
+                if (!imageURL) {
+                    imageURL = this.getXmlTextValue(item.guid);
+                }
+
+                if (imageURL) {
+                    this.temp.images[item['wp:post_id']] = imageURL;
+                }
             }
         }
     }
@@ -631,8 +751,12 @@ class WxrParser {
      */
     getPostImages(postText) {
         let postImages = [];
-        let regex = /<img.*?src="(.*?)"/g;
+        let regex = /<img\b[^>]*\ssrc\s*=\s*["']([^"']+)["']/gmi;
         let regexResult = null;
+
+        if (typeof postText !== 'string') {
+            return postImages;
+        }
 
         // Get images from the content
         do {
@@ -655,15 +779,16 @@ class WxrParser {
      */
     getFeaturedPostImage(postObject) {
         let featuredImage = false;
+        let postMetaItems = this.normalizeToArray(postObject['wp:postmeta']);
 
-        if(!postObject['wp:postmeta'] || !postObject['wp:postmeta'].length) {
-            return;
+        if(!postMetaItems.length) {
+            return false;
         }
 
         // Get featured image
-        for(let postMeta of postObject['wp:postmeta']) {
-            if(postMeta['wp:meta_key'] === '_thumbnail_id') {
-                let featuredImageID = postMeta['wp:meta_value'];
+        for(let postMeta of postMetaItems) {
+            if(this.getXmlTextValue(postMeta['wp:meta_key']) === '_thumbnail_id') {
+                let featuredImageID = this.getXmlTextValue(postMeta['wp:meta_value']);
 
                 if(this.temp.images[featuredImageID]) {
                     featuredImage = this.temp.images[featuredImageID];
@@ -735,7 +860,7 @@ class WxrParser {
                 url: image.replace(imageFileName, encodeURIComponent(imageFileName)),
                 dest: path.join(dirPath, imageFileName),
                 headers: {
-                    'User-Agent': 'Publii'
+                    'User-Agent': 'Publyy'
                 }
             }).then(({filename, image}) => {
                 this.downloadImagesProgress++;

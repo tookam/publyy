@@ -1,5 +1,6 @@
 const path = require('path');
 const ContentHelper = require('./../helpers/content');
+const ItemSlugHelper = require('./../helpers/item-slug');
 
 /**
  * Post item for the renderer
@@ -43,10 +44,11 @@ class PostItem {
     }
 
     prepareData() {
-        let postURL = this.siteConfig.domain + '/' + this.post.slug + '.html';
+        let postSlug = ItemSlugHelper.create(this.post, 'post');
+        let postURL = this.siteConfig.domain + '/' + postSlug + '.html';
 
         if (this.siteConfig.advanced.urls.postsPrefix) {
-            postURL = this.siteConfig.domain + '/' + this.siteConfig.advanced.urls.postsPrefix + '/' + this.post.slug + '.html';
+            postURL = this.siteConfig.domain + '/' + this.siteConfig.advanced.urls.postsPrefix + '/' + postSlug + '.html';
         }
 
         let preparedText = ContentHelper.prepareContent(this.post.id, this.post.text, this.siteConfig.domain, this.themeConfig, this.renderer, this.metaData.editor);
@@ -67,10 +69,10 @@ class PostItem {
         }
 
         if (this.siteConfig.advanced.urls.cleanUrls) {
-            postURL = this.siteConfig.domain + '/' + this.post.slug + '/';
+            postURL = this.siteConfig.domain + '/' + postSlug + '/';
 
             if (this.siteConfig.advanced.urls.postsPrefix) {
-                postURL = this.siteConfig.domain + '/' + this.siteConfig.advanced.urls.postsPrefix + '/' + this.post.slug + '/';
+                postURL = this.siteConfig.domain + '/' + this.siteConfig.advanced.urls.postsPrefix + '/' + postSlug + '/';
             }
 
             if (this.renderer.previewMode || this.renderer.siteConfig.advanced.urls.addIndex) {
@@ -82,7 +84,7 @@ class PostItem {
             id: this.post.id,
             title: this.post.title,
             author: this.renderer.cachedItems.authors[this.post.authors],
-            slug: this.post.slug,
+            slug: postSlug,
             url: postURL,
             text: preparedText,
             excerpt: preparedExcerpt,

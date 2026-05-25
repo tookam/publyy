@@ -30,6 +30,25 @@ describe('Slug creation', function() {
         assert.strictEqual('loremipsum', slug('Lorem;Ipsum:+'));
     });
 
+    it('should remove HTML tags from the slug', function() {
+        assert.strictEqual('link-title', slug('<a href="https://example.com">Link Title</a>'));
+        assert.strictEqual('link-title', slug('&lt;a href=&quot;https://example.com&quot;&gt;Link Title&lt;/a&gt;'));
+    });
+
+    it('should keep slugs under the filesystem name limit', function() {
+        let longSlug = slug(Array(80).fill('lorem').join(' '));
+        assert.ok(longSlug.length <= slug.MAX_LENGTH);
+        assert.ok(!longSlug.endsWith('-'));
+    });
+
+    it('should append suffixes without exceeding the slug limit', function() {
+        let baseSlug = Array(80).fill('lorem').join('-');
+        let suffixedSlug = slug.withSuffix(baseSlug, 12345);
+
+        assert.ok(suffixedSlug.length <= slug.MAX_LENGTH);
+        assert.ok(suffixedSlug.endsWith('-12345'));
+    });
+
     it('should support japanese chars', function() {
         assert.strictEqual('konnitihashi-jie', slug('こんにちは世界'));
         assert.strictEqual('yaa-jin-ri-hayuan-qi-desuka', slug('やあ！ 今日は元気ですか？'));

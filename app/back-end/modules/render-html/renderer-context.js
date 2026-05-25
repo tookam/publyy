@@ -133,7 +133,8 @@ class RendererContext {
                 let foundedPost = postsData.filter(post => post.id == items[i].link);
 
                 if(foundedPost.length && foundedPost[0].status.indexOf('trashed') === -1) {
-                    items[i].link = foundedPost[0].slug;
+                    let cachedPost = this.renderer.cachedItems.posts[items[i].link];
+                    items[i].link = cachedPost && cachedPost.slug ? cachedPost.slug : foundedPost[0].slug;
                 } else {
                     items[i] = false;
                 }
@@ -143,7 +144,8 @@ class RendererContext {
                 let foundedPage = pagesData.filter(page => page.id == items[i].link);
 
                 if (foundedPage.length && foundedPage[0].status.indexOf('trashed') === -1) {
-                    items[i].link = foundedPage[0].slug;
+                    let cachedPage = this.renderer.cachedItems.pages[items[i].link];
+                    items[i].link = cachedPage && cachedPage.slug ? cachedPage.slug : foundedPage[0].slug;
                 } else {
                     items[i] = false;
                 }

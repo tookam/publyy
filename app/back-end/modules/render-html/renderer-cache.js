@@ -394,6 +394,8 @@ class RendererCache {
     getPagesStructure () {
         // Pages structure
         let pagesConfigPath = path.join(this.renderer.inputDir, 'config', 'pages.config.json');
+        this.renderer.cachedItems.pagesStructure = {};
+        this.renderer.cachedItems.pagesStructureHierarchy = {};
 
         if (fs.existsSync(pagesConfigPath)) {
             let pagesStructure = JSON.parse(FileHelper.readFileSync(pagesConfigPath));

@@ -9,7 +9,199 @@ const AppFiles = require('../helpers/app-files.js');
 const PathValidator = require('../helpers/path-validator.js');
 const AdmZip = require("adm-zip");
 
-const { isValidDirSegment } = PathValidator;
+const { isValidDirSegment, resolveValidPath } = PathValidator;
+const MAX_ZIP_ENTRIES = 10000;
+const MAX_ZIP_UNCOMPRESSED_SIZE = 250 * 1024 * 1024;
+
+function isValidPackageDirName(name) {
+    return isValidDirSegment(name) && name[0] !== '.' && name[0] !== '_';
+}
+
+function isSafeZipEntryName(entryName) {
+    if (typeof entryName !== 'string' || entryName.length === 0) {
+        return false;
+    }
+
+    if (path.isAbsolute(entryName) || path.win32.isAbsolute(entryName)) {
+        return false;
+    }
+
+    let segments = entryName.replace(/\\/g, '/').split('/').filter(Boolean);
+
+    if (segments.length === 0) {
+        return false;
+    }
+
+    return !segments.some(segment => segment === '..');
+}
+
+function safeExtractZip(sourcePath, destinationPath) {
+    let zip = new AdmZip(sourcePath);
+    let entries = zip.getEntries();
+    let totalUncompressedSize = 0;
+
+    if (entries.length > MAX_ZIP_ENTRIES) {
+        return false;
+    }
+
+    for (let entry of entries) {
+        if (!isSafeZipEntryName(entry.entryName)) {
+            return false;
+        }
+
+        totalUncompressedSize += entry.header && entry.header.size ? entry.header.size : 0;
+
+        if (totalUncompressedSize > MAX_ZIP_UNCOMPRESSED_SIZE) {
+            return false;
+        }
+    }
+
+    fs.mkdirSync(destinationPath, { recursive: true });
+
+    let extractedSize = 0;
+
+    for (let entry of entries) {
+        let entryName = entry.entryName.replace(/\\/g, '/');
+        let entryPath = resolveValidPath(destinationPath, entryName);
+
+        if (!entryPath) {
+            return false;
+        }
+
+        if (entry.isDirectory) {
+            fs.mkdirSync(entryPath, { recursive: true });
+            continue;
+        }
+
+        let data = entry.getData();
+        extractedSize += data.length;
+
+        if (extractedSize > MAX_ZIP_UNCOMPRESSED_SIZE) {
+            return false;
+        }
+
+        fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+        fs.writeFileSync(entryPath, data);
+    }
+
+    return true;
+}
+
+function listInstallableDirs(tempPath) {
+    return fs.readdirSync(tempPath).filter(function(file) {
+        if (!isValidPackageDirName(file)) {
+            return false;
+        }
+
+        return fs.statSync(path.join(tempPath, file)).isDirectory();
+    });
+}
+
+function copyDirectoryWithoutSymlinks(sourcePath, destinationPath) {
+    fs.copySync(sourcePath, destinationPath, {
+        filter: (src) => {
+            try {
+                return !fs.lstatSync(src).isSymbolicLink();
+            } catch (e) {
+                return false;
+            }
+        }
+    });
+}
+
+function installPackageFromConfig(config, destinationRoot) {
+    if (!config || typeof config.sourcePath !== 'string') {
+        return 'wrong-format';
+    }
+
+    let sourcePath = config.sourcePath;
+    let extension = path.parse(sourcePath).ext.toLowerCase();
+    let newPackageDir = path.parse(sourcePath).name;
+    let status = '';
+    let sourceStats;
+
+    try {
+        sourceStats = fs.statSync(sourcePath);
+    } catch (e) {
+        return 'wrong-format';
+    }
+
+    if (extension !== '.zip' && extension !== '') {
+        return 'wrong-format';
+    }
+
+    let sourceDir = sourcePath;
+    let tempPath = false;
+    let installTempPath = false;
+
+    try {
+        if (extension === '.zip') {
+            tempPath = resolveValidPath(destinationRoot, '__TEMP__-' + process.pid + '-' + Date.now());
+
+            if (!tempPath || !safeExtractZip(sourcePath, tempPath)) {
+                return 'wrong-format';
+            }
+
+            let dirs = listInstallableDirs(tempPath);
+
+            if (dirs.length !== 1) {
+                return 'wrong-format';
+            }
+
+            newPackageDir = dirs[0];
+            sourceDir = path.join(tempPath, newPackageDir);
+        } else if (!sourceStats.isDirectory()) {
+            return 'wrong-format';
+        }
+
+        if (!isValidPackageDirName(newPackageDir)) {
+            return 'wrong-format';
+        }
+
+        let directoryPath = resolveValidPath(destinationRoot, newPackageDir);
+
+        if (!directoryPath) {
+            return 'wrong-format';
+        }
+
+        installTempPath = resolveValidPath(destinationRoot, '__INSTALL__-' + process.pid + '-' + Date.now());
+
+        if (!installTempPath) {
+            return 'wrong-format';
+        }
+
+        try {
+            fs.statSync(directoryPath);
+            status = 'updated';
+        } catch (e) {
+            status = 'added';
+        }
+
+        copyDirectoryWithoutSymlinks(sourceDir, installTempPath);
+
+        if (status === 'updated') {
+            fs.removeSync(directoryPath);
+        }
+
+        fs.moveSync(installTempPath, directoryPath);
+    } catch (e) {
+        return 'wrong-format';
+    } finally {
+        if (tempPath) {
+            try {
+                fs.removeSync(tempPath);
+            } catch (e) {}
+        }
+
+        if (installTempPath) {
+            try {
+                fs.removeSync(installTempPath);
+            } catch (e) {}
+        }
+    }
+
+    return status;
+}
 
 /*
  * Events for the IPC communication regarding app
@@ -192,73 +384,10 @@ class AppEvents {
          */
         ipcMain.on('app-theme-upload', function(event, config) {
             let themesLoader = new Themes(appInstance);
-            let newThemeDir = path.parse(config.sourcePath).name;
-            let extension = path.parse(config.sourcePath).ext;
-            let status = '';
+            let status = installPackageFromConfig(config, themesLoader.themesPath);
 
-            if (extension === '.zip' || extension === '') {
-                if (extension === '.zip') {
-                    let zipPath = path.join(themesLoader.themesPath, '__TEMP__');
-                    let zip = new AdmZip(config.sourcePath);
-                    fs.mkdirSync(zipPath, { recursive: true });
-                    zip.extractAllTo(zipPath, true);
-
-                    let dirs = fs.readdirSync(zipPath).filter(function(file) {
-                        if(file.substr(0,1) === '_' || file.substr(0,1) === '.') {
-                            return false;
-                        }
-
-                        return fs.statSync(path.join(zipPath, file)).isDirectory();
-                    });
-
-                    if (dirs.length !== 1) {
-                        event.sender.send('app-theme-uploaded', {
-                            status: 'wrong-format',
-                            themes: appInstance.themes
-                        });
-
-                        fs.removeSync(zipPath);
-
-                        return;
-                    }
-
-                    newThemeDir = dirs[0];
-                    let directoryPath = path.join(themesLoader.themesPath, newThemeDir);
-
-                    try {
-                        fs.statSync(directoryPath);
-                        status = 'updated';
-                        fs.removeSync(directoryPath);
-                    } catch (e) {
-                        status = 'added';
-                    }
-
-                    fs.copySync(path.join(zipPath, newThemeDir), directoryPath);
-                    fs.removeSync(zipPath);
-                    appInstance.themes = themesLoader.loadThemes();
-
-                    event.sender.send('app-theme-uploaded', {
-                        status: status,
-                        themes: appInstance.themes
-                    });
-
-                    return;
-                } else {
-                    let directoryPath = path.join(themesLoader.themesPath, newThemeDir);
-
-                    try {
-                        fs.statSync(directoryPath);
-                        status = 'updated';
-                        fs.removeSync(directoryPath);
-                    } catch (e) {
-                        status = 'added';
-                    }
-
-                    fs.copySync(config.sourcePath, directoryPath);
-                    appInstance.themes = themesLoader.loadThemes();
-                }
-            } else {
-                status = 'wrong-format';
+            if (status !== 'wrong-format') {
+                appInstance.themes = themesLoader.loadThemes();
             }
 
             event.sender.send('app-theme-uploaded', {
@@ -272,74 +401,10 @@ class AppEvents {
          */
         ipcMain.on('app-language-upload', function(event, config) {
             let languagesLoader = new Languages(appInstance);
-            let newLanguageDir = path.parse(config.sourcePath).name;
-            let extension = path.parse(config.sourcePath).ext;
-            let status = '';
+            let status = installPackageFromConfig(config, languagesLoader.languagesPath);
 
-            if (extension === '.zip' || extension === '') {
-                if (extension === '.zip') {
-                    let zipPath = path.join(languagesLoader.languagesPath, '__TEMP__');
-                    let zip = new AdmZip(config.sourcePath);
-                    fs.mkdirSync(zipPath, { recursive: true });
-                    zip.extractAllTo(zipPath, true);
-
-                    let dirs = fs.readdirSync(zipPath).filter(function(file) {
-                        if(file.substr(0,1) === '_' || file.substr(0,1) === '.') {
-                            return false;
-                        }
-
-                        return fs.statSync(path.join(zipPath, file)).isDirectory();
-                    });
-
-                    if (dirs.length !== 1) {
-                        event.sender.send('app-language-uploaded', {
-                            status: 'wrong-format',
-                            languages: appInstance.languages
-                        });
-
-                        fs.removeSync(zipPath);
-
-                        return;
-                    }
-
-                    newLanguageDir = dirs[0];
-
-                    let directoryPath = path.join(languagesLoader.languagesPath, newLanguageDir);
-
-                    try {
-                        fs.statSync(directoryPath);
-                        status = 'updated';
-                        fs.removeSync(directoryPath);
-                    } catch (e) {
-                        status = 'added';
-                    }
-
-                    fs.copySync(path.join(zipPath, newLanguageDir), directoryPath);
-                    fs.removeSync(zipPath);
-                    appInstance.languages = languagesLoader.loadLanguages();
-
-                    event.sender.send('app-language-uploaded', {
-                        status: status,
-                        languages: appInstance.languages
-                    });
-
-                    return;
-                } else {
-                    let directoryPath = path.join(languagesLoader.languagesPath, newLanguageDir);
-
-                    try {
-                        fs.statSync(directoryPath);
-                        status = 'updated';
-                        fs.removeSync(directoryPath);
-                    } catch (e) {
-                        status = 'added';
-                    }
-
-                    fs.copySync(config.sourcePath, directoryPath);
-                    appInstance.languages = languagesLoader.loadLanguages();
-                }
-            } else {
-                status = 'wrong-format';
+            if (status !== 'wrong-format') {
+                appInstance.languages = languagesLoader.loadLanguages();
             }
 
             event.sender.send('app-language-uploaded', {
@@ -353,74 +418,10 @@ class AppEvents {
          */
         ipcMain.on('app-plugin-upload', function(event, config) {
             let pluginsLoader = new Plugins(appInstance.appDir, appInstance.sitesDir);
-            let newPluginDir = path.parse(config.sourcePath).name;
-            let extension = path.parse(config.sourcePath).ext;
-            let status = '';
+            let status = installPackageFromConfig(config, pluginsLoader.pluginsPath);
 
-            if (extension === '.zip' || extension === '') {
-                if (extension === '.zip') {
-                    let zipPath = path.join(pluginsLoader.pluginsPath, '__TEMP__');
-                    fs.mkdirSync(zipPath, { recursive: true });
-                    let zip = new AdmZip(config.sourcePath);
-                    zip.extractAllTo(zipPath, true);
-
-                    let dirs = fs.readdirSync(zipPath).filter(function(file) {
-                        if(file.substr(0,1) === '_' || file.substr(0,1) === '.') {
-                            return false;
-                        }
-
-                        return fs.statSync(path.join(zipPath, file)).isDirectory();
-                    });
-
-                    if (dirs.length !== 1) {
-                        event.sender.send('app-plugin-uploaded', {
-                            status: 'wrong-format',
-                            plugins: appInstance.plugins
-                        });
-
-                        fs.removeSync(zipPath);
-
-                        return;
-                    }
-
-                    newPluginDir = dirs[0];
-
-                    let directoryPath = path.join(pluginsLoader.pluginsPath, newPluginDir);
-
-                    try {
-                        fs.statSync(directoryPath);
-                        status = 'updated';
-                        fs.removeSync(directoryPath);
-                    } catch (e) {
-                        status = 'added';
-                    }
-
-                    fs.copySync(path.join(zipPath, newPluginDir), directoryPath);
-                    fs.removeSync(zipPath);
-                    appInstance.plugins = pluginsLoader.loadPlugins();
-
-                    event.sender.send('app-plugin-uploaded', {
-                        status: status,
-                        plugins: appInstance.plugins
-                    });
-
-                    return;
-                } else {
-                    let directoryPath = path.join(pluginsLoader.pluginsPath, newPluginDir);
-
-                    try {
-                        fs.statSync(directoryPath);
-                        status = 'updated';
-                        fs.removeSync(directoryPath);
-                    } catch (e) {
-                        status = 'added';
-                    }
-
-                    fs.copySync(config.sourcePath, directoryPath);
-                    appInstance.plugins = pluginsLoader.loadPlugins();
-                }
-            } else {
-                status = 'wrong-format';
+            if (status !== 'wrong-format') {
+                appInstance.plugins = pluginsLoader.loadPlugins();
             }
 
             event.sender.send('app-plugin-uploaded', {

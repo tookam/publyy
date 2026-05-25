@@ -7,6 +7,21 @@ const normalizePath = require('normalize-path');
  * Other helper functions
  */
 class UtilsHelper {
+    static isUnsafeMergeKey(property) {
+        return property === '__proto__' ||
+               property === 'prototype' ||
+               property === 'constructor';
+    }
+
+    static isPlainObject(value) {
+        if (!value || typeof value !== 'object') {
+            return false;
+        }
+
+        let prototype = Object.getPrototypeOf(value);
+        return prototype === Object.prototype || prototype === null;
+    }
+
     /*
      *
      *  Object helper functions
@@ -17,15 +32,23 @@ class UtilsHelper {
      * Deep merge for objects as Object.assign not merge objects properly
      */
     static mergeObjects(target, source) {
-        if (typeof target !== 'object') {
+        if (!UtilsHelper.isPlainObject(target)) {
             target = {};
         }
 
+        if (!UtilsHelper.isPlainObject(source)) {
+            source = {};
+        }
+
         for (let property in source) {
-            if (source.hasOwnProperty(property)) {
+            if (Object.prototype.hasOwnProperty.call(source, property)) {
+                if (UtilsHelper.isUnsafeMergeKey(property)) {
+                    continue;
+                }
+
                 let sourceProperty = source[property];
 
-                if (typeof sourceProperty === 'object' && !Array.isArray(sourceProperty) && !(sourceProperty instanceof Date)) {
+                if (UtilsHelper.isPlainObject(sourceProperty)) {
                     target[property] = UtilsHelper.mergeObjects(target[property], sourceProperty);
                     continue;
                 } else if(sourceProperty instanceof Date) {
@@ -209,7 +232,7 @@ class UtilsHelper {
                     let foundedGroups = dimensions[key].group.split(',');
 
                     for(let foundedGroup of foundedGroups) {
-                        if (groups.indexOf(foundedGroup)) {
+                        if (groups.indexOf(foundedGroup) === -1) {
                             groups.push(foundedGroup);
                         }
                     }

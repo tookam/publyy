@@ -11,6 +11,11 @@ const normalizePath = require('normalize-path');
 const PathValidator = require('./helpers/path-validator.js');
 
 class Languages {
+    static isValidLanguageName(languageName) {
+        return PathValidator.isValidDirSegment(languageName) &&
+               languageName[0] !== '.';
+    }
+
     constructor(appInstance) {
         this.basePath = appInstance.appDir;
         this.languagesPath = path.join(this.basePath, 'languages');
@@ -130,6 +135,10 @@ class Languages {
      * Load translations
      */
     loadTranslations (languageName = 'en-gb', type = 'default') {
+        if (!Languages.isValidLanguageName(languageName)) {
+            return false;
+        }
+
         let translationsPath = path.join(__dirname, '..', 'default-files', 'default-languages').replace('app.asar', 'app.asar.unpacked');
 
         if (type !== 'default') {
@@ -149,6 +158,10 @@ class Languages {
      * Load translations
      */
      loadWysiwygTranslation (languageName = 'en-gb', type = 'default') {
+        if (!Languages.isValidLanguageName(languageName)) {
+            return false;
+        }
+
         let translationsPath = path.join(__dirname, '..', 'default-files', 'default-languages').replace('app.asar', 'app.asar.unpacked');
 
         if (type !== 'default') {
@@ -168,6 +181,10 @@ class Languages {
      * Load language config
      */
     loadLanguageConfig (languageName = 'en-gb', type = 'default') {
+        if (!Languages.isValidLanguageName(languageName)) {
+            return false;
+        }
+
         let configPath = path.join(__dirname, '..', 'default-files', 'default-languages').replace('app.asar', 'app.asar.unpacked');
 
         if (type !== 'default') {

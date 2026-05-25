@@ -578,6 +578,7 @@ export default {
             this.uploadingProgress = 100;
             this.uploadingProgressIsStopped = true;
             this.syncInProgress = false;
+            this.uploadInProgress = false;
             this.$store.commit('setSidebarStatus', 'prepared');
 
             if(data && data.additionalMessage ) {
@@ -652,6 +653,26 @@ export default {
 
             // Load the deployment results
             mainProcessAPI.receiveOnce('app-deploy-uploaded', (data) => {
+                data = data || {};
+
+                if (data.status === false) {
+                    let message = data.message || this.$t('sync.connectionToServerErrorText');
+
+                    if (message.translation) {
+                        message = this.$t(message.translation);
+                    }
+
+                    this.uploadingProgress = 100;
+                    this.uploadingProgressIsStopped = true;
+                    this.uploadingProgressColor = 'red';
+                    this.messageFromUploader = message;
+                    this.syncInProgress = false;
+                    this.uploadInProgress = false;
+                    this.uploadError = true;
+                    this.$store.commit('setSidebarStatus', 'prepared');
+                    return;
+                }
+
                 if(data.type && data.path && this.isManual) {
                     this.isInSync = true;
                     this.manualFilePath = data.path;

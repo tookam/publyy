@@ -1,0 +1,58 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            app/package-lock.json
+
+      - name: Configure native build tools
+        run: npm config set msvs_version 2022
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install app dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Prepare editor assets
+        run: npm run prepare-editor:win
+
+      - name: Build renderer assets
+        run: npm run prod
+
+      - name: Build Windows installer
+        run: npm run packager:win
+
+      - name: Upload Windows installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Publyy-Windows-x64
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/*.yml
+            dist/*.yaml
+          if-no-files-found: error

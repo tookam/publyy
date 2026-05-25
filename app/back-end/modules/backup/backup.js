@@ -377,11 +377,19 @@ class Backup {
                     ignore: function (resolvedEntryPath, header) {
                         let entryName = header && header.name ? header.name : '';
 
-                        if (path.isAbsolute(entryName)) {
+                        if (!entryName) {
                             return true;
                         }
 
-                        if (entryName.split(/[/\\]+/).some(s => s === '..')) {
+                        if (path.isAbsolute(entryName) || path.win32.isAbsolute(entryName)) {
+                            return true;
+                        }
+
+                        if (header && (header.type === 'symlink' || header.type === 'link')) {
+                            return true;
+                        }
+
+                        if (entryName.replace(/\\/g, '/').split('/').some(s => s === '..')) {
                             return true;
                         }
 

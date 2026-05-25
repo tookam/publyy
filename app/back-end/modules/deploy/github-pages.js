@@ -32,7 +32,7 @@ class GithubPages {
             request: {
                 timeout: 30000
             },
-            userAgent: "Publii"
+            userAgent: "Publyy"
         });
         this.token = '';
         this.repository = '';
@@ -69,7 +69,7 @@ class GithubPages {
             request: {
                 timeout: 30000
             },
-            userAgent: "Publii"
+            userAgent: "Publyy"
         });
 
         process.send({
@@ -208,7 +208,7 @@ class GithubPages {
             request: {
                 timeout: 30000
             },
-            userAgent: "Publii"
+            userAgent: "Publyy"
         });
 
         this.apiRequest(
@@ -762,7 +762,7 @@ class GithubPages {
             {
                 owner: this.user,
                 repo: this.repository,
-                message: 'Updated from Publii',
+                message: 'Updated from Publyy',
                 tree: tree,
                 parents: [parentSHA]
             },

@@ -1,6 +1,8 @@
 const transliterate = require('transliteration').transliterate;
 const slug = require('slug');
 
+const MAX_SLUG_LENGTH = 180;
+
 /*
  * Custom mode of rfc3986 without unicode symbols
  */
@@ -46,7 +48,70 @@ slug.defaults.charmap['Ü'] = 'UE';
 slug.defaults.charmap['ß'] = 'ss';
 slug.defaults.charmap['ẞ'] = 'SS';
 
+function decodeHtmlEntities(text) {
+    if (text === null || typeof text === 'undefined') {
+        return '';
+    }
+
+    return String(text)
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&amp;/gi, '&')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;|&apos;/gi, "'");
+}
+
+function stripHtml(text) {
+    return decodeHtmlEntities(text).replace(/<[^>]*>/gmi, ' ');
+}
+
+function truncateByBytes(text, maxLength) {
+    let output = '';
+
+    for (let char of String(text)) {
+        if (Buffer.byteLength(output + char, 'utf8') > maxLength) {
+            break;
+        }
+
+        output += char;
+    }
+
+    return output;
+}
+
+function truncateSlug(slugText, maxLength = MAX_SLUG_LENGTH) {
+    slugText = String(slugText || '');
+
+    if (Buffer.byteLength(slugText, 'utf8') <= maxLength) {
+        return slugText;
+    }
+
+    let truncated = truncateByBytes(slugText, maxLength).replace(/[-.]+$/g, '');
+    let withoutPartialWord = truncated.replace(/-[^-]*$/g, '');
+
+    if (withoutPartialWord.length >= Math.floor(maxLength / 2)) {
+        truncated = withoutPartialWord;
+    }
+
+    return truncated || truncateByBytes(slugText, maxLength).replace(/[-.]+$/g, '');
+}
+
+function withSuffix(slugText, suffix, maxLength = MAX_SLUG_LENGTH) {
+    suffix = String(suffix || '');
+
+    if (suffix === '') {
+        return truncateSlug(slugText, maxLength);
+    }
+
+    let suffixPart = suffix.charAt(0) === '-' ? suffix : '-' + suffix;
+    let maxBaseLength = Math.max(1, maxLength - Buffer.byteLength(suffixPart, 'utf8'));
+    let baseSlug = truncateSlug(slugText, maxBaseLength).replace(/[-.]+$/g, '');
+
+    return baseSlug + suffixPart;
+}
+
 function createSlug(textToSlugify, filenameMode = false, saveLowerChars = false) {
+    textToSlugify = stripHtml(textToSlugify);
     textToSlugify = transliterate(textToSlugify, { replace: [
         ['ä', 'ae'], 
         ['Ä', 'AE'], 
@@ -78,7 +143,11 @@ function createSlug(textToSlugify, filenameMode = false, saveLowerChars = false)
         return '';
     }
 
-    return textToSlugify;
+    return truncateSlug(textToSlugify);
 }
+
+createSlug.MAX_LENGTH = MAX_SLUG_LENGTH;
+createSlug.truncate = truncateSlug;
+createSlug.withSuffix = withSuffix;
 
 module.exports = createSlug;

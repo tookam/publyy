@@ -142,7 +142,8 @@ class TemplateHelper {
 
     saveOutputPageFile (pageID, pageSlug, content, renderer) {
         let suffix = '.html';
-        let parentItems = renderer.cachedItems.pagesStructureHierarchy[pageID];
+        let pagesStructureHierarchy = renderer.cachedItems.pagesStructureHierarchy || {};
+        let parentItems = pagesStructureHierarchy[pageID];
         
         if (this.siteConfig.advanced.urls.cleanUrls) {
             suffix = '/index.html';

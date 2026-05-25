@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const urlHelper = require('url');
 const electron = require('electron');
 const shell = electron.shell;
 const ipcMain = electron.ipcMain;
@@ -185,7 +186,7 @@ class PreviewEvents {
         }
 
         setTimeout(function() {
-            shell.openExternal('file:///' + url);
+            shell.openExternal(urlHelper.pathToFileURL(url).href);
         }, 1000);
     }
 }

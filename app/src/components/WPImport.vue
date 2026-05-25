@@ -287,6 +287,18 @@ export default {
         fileImported: function(data) {
             let siteName = this.$store.state.currentSite.config.name;
             this.importInProgress = false;
+            this.uploadDisabled = false;
+
+            if(this.bindedFileImportProgress) {
+                mainProcessAPI.stopReceive('app-wxr-import-progress', this.bindedFileImportProgress);
+                this.bindedFileImportProgress = false;
+            }
+
+            if (data.status === 'error') {
+                this.progressInfo = '';
+                this.errorMessage = data.message || 'An error occurred during WordPress import.';
+                return;
+            }
 
             this.$bus.$emit('confirm-display', {
                 message: this.$t('tools.wpImport.wpImportGoToRegenerateMsg'),

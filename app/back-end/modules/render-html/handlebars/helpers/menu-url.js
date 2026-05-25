@@ -49,7 +49,8 @@ function menuURLHelper(rendererInstance, Handlebars) {
 
         // Link to the single page
         if (this.type === 'page') {
-            let parentItems = rendererInstance.cachedItems.pagesStructureHierarchy[this.linkID];
+            let pagesStructureHierarchy = rendererInstance.cachedItems.pagesStructureHierarchy || {};
+            let parentItems = pagesStructureHierarchy[this.linkID];
             let pageSlug = this.link;
 
             if (rendererInstance.siteConfig.advanced.usePageAsFrontpage && rendererInstance.siteConfig.advanced.pageAsFrontpage === this.linkID) {
