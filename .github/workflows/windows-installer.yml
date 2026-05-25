@@ -41,7 +41,20 @@ jobs:
         run: npm run prod
 
       - name: Build Windows installer
-        run: npm run packager:win
+        shell: pwsh
+        run: |
+          npm run packager:win 2>&1 | Tee-Object -FilePath packager-win.log
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Publyy-Windows-build-log
+          path: packager-win.log
+          if-no-files-found: ignore
 
       - name: Upload Windows installer artifacts
         uses: actions/upload-artifact@v4
