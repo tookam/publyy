@@ -13,7 +13,7 @@ jobs:
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-
+      GYP_MSVS_VERSION: "2022"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -26,9 +26,6 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             app/package-lock.json
-
-      - name: Configure native build tools
-        run: npm config set msvs_version 2022
 
       - name: Install root dependencies
         run: npm ci
